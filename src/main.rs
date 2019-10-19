@@ -7,7 +7,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use slab::Slab;
 use core::convert::TryInto;
-use metrics::{Recorder, Key, counter, timing};
+use metrics::{Recorder, Key, counter, timing, value};
 use quanta::Clock;
 
 #[derive(Default)]
@@ -17,7 +17,10 @@ pub struct MetricsSubscriber {
 }
 
 struct Span {
-    name: &'static str,
+    enters: String,
+    enters_count: u64,
+    count: String,
+    duration_ns: String,
     last_enter: u64,
 }
 
@@ -27,8 +30,13 @@ impl Subscriber for MetricsSubscriber {
     }
 
     fn new_span(&self, attrs: &Attributes<'_>) -> Id {
+        let target = attrs.metadata().target().replace("::", ".");
+        let name = attrs.metadata().name();
         let span = Span {
-            name: attrs.metadata().name(),
+            enters: format!("{}.{}.enters", target, name),
+            enters_count: 0,
+            count: format!("{}.{}.count", target, name),
+            duration_ns: format!("{}.{}.duration_ns", target, name),
             last_enter: 0,
         };
         let idx = self.spans.lock().insert(span);
@@ -48,6 +56,7 @@ impl Subscriber for MetricsSubscriber {
         let idx = id.into_u64() as usize - 1;
         if let Some(span) = self.spans.lock().get_mut(idx) {
             span.last_enter = self.clock.now();
+            span.enters_count += 1;
         }
     }
 
@@ -59,9 +68,24 @@ impl Subscriber for MetricsSubscriber {
             assert!(now >= last);
             let delta = now - last;
 
-            counter!(span.name, 1);
-            timing!(span.name, delta);
+            counter!(span.count.clone(), 1);
+            timing!(span.duration_ns.clone(), delta);
         }
+    }
+
+    fn try_close(&self, id: Id) -> bool {
+        let idx = id.into_u64() as usize - 1;
+        let mut spans = self.spans.lock();
+        let should_delete = if let Some(span) = spans.get(idx) {
+            value!(span.enters.clone(), span.enters_count);
+            true
+        } else { false };
+
+        if should_delete {
+            spans.remove(idx);
+        }
+
+        true
     }
 }
 
@@ -78,7 +102,7 @@ impl Recorder for PrintRecorder {
     }
 
     fn record_histogram(&self, key: Key, value: u64) {
-        println!("metrics -> histogram(name={}, value={}ns)", key, value);
+        println!("metrics -> histogram(name={}, value={})", key, value);
     }
 }
 
