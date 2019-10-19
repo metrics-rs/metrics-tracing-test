@@ -1,0 +1,13 @@
+[package]
+name = "metrics-tracing-test"
+version = "0.1.0"
+authors = ["Toby Lawrence <toby@nuclearfurnace.com"]
+edition = "2018"
+
+[dependencies]
+tracing-core = "^0.1"
+tracing = "^0.1"
+slab = "^0.4"
+parking_lot = "^0.9"
+quanta = "^0.3"
+metrics = { version = "^0.12", features = ["std"] }
