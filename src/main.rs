@@ -1,93 +1,12 @@
-use tracing_core::{
-    Subscriber, Metadata, Event,
-    span::{Attributes, Record, Id},
-};
+use metrics::{Key, Recorder};
 use tracing::{debug, error, info, span, trace, warn, Level};
-use std::sync::Arc;
-use parking_lot::Mutex;
-use slab::Slab;
-use core::convert::TryInto;
-use metrics::{Recorder, Key, counter, timing, value};
-use quanta::Clock;
+use tracing_subscriber::{layer::Layer, registry::Registry};
 
-#[derive(Default)]
-pub struct MetricsSubscriber {
-    spans: Arc<Mutex<Slab<Span>>>,
-    clock: Clock,
-}
+mod thingy;
+use self::thingy::Thingy;
 
-struct Span {
-    enters: String,
-    enters_count: u64,
-    count: String,
-    duration_ns: String,
-    last_enter: u64,
-}
-
-impl Subscriber for MetricsSubscriber {
-    fn enabled(&self, _metadata: &Metadata<'_>) -> bool {
-        true
-    }
-
-    fn new_span(&self, attrs: &Attributes<'_>) -> Id {
-        let target = attrs.metadata().target().replace("::", ".");
-        let name = attrs.metadata().name();
-        let span = Span {
-            enters: format!("{}.{}.enters", target, name),
-            enters_count: 0,
-            count: format!("{}.{}.count", target, name),
-            duration_ns: format!("{}.{}.duration_ns", target, name),
-            last_enter: 0,
-        };
-        let idx = self.spans.lock().insert(span);
-        Id::from_u64((idx + 1).try_into().unwrap())
-    }
-
-    fn record(&self, _id: &Id, _values: &Record<'_>) {
-    }
-
-    fn record_follows_from(&self, _child_id: &Id, _parent_id: &Id) {
-    }
-
-    fn event(&self, _event: &Event<'_>) {
-    }
-
-    fn enter(&self, id: &Id) {
-        let idx = id.into_u64() as usize - 1;
-        if let Some(span) = self.spans.lock().get_mut(idx) {
-            span.last_enter = self.clock.now();
-            span.enters_count += 1;
-        }
-    }
-
-    fn exit(&self, id: &Id) {
-        let idx = id.into_u64() as usize - 1;
-        if let Some(span) = self.spans.lock().get(idx) {
-            let last = span.last_enter;
-            let now = self.clock.now();
-            assert!(now >= last);
-            let delta = now - last;
-
-            counter!(span.count.clone(), 1);
-            timing!(span.duration_ns.clone(), delta);
-        }
-    }
-
-    fn try_close(&self, id: Id) -> bool {
-        let idx = id.into_u64() as usize - 1;
-        let mut spans = self.spans.lock();
-        let should_delete = if let Some(span) = spans.get(idx) {
-            value!(span.enters.clone(), span.enters_count);
-            true
-        } else { false };
-
-        if should_delete {
-            spans.remove(idx);
-        }
-
-        true
-    }
-}
+mod layer;
+use self::layer::Metrics;
 
 #[derive(Default)]
 struct PrintRecorder;
@@ -133,6 +52,8 @@ fn shave_all(yaks: usize) -> usize {
         trace!(target: "yak_events", yak, shaved);
 
         if !shaved {
+            let thingy = Thingy::default();
+            thingy.handle_unshaved(yak);
             error!(message = "failed to shave yak!", yak);
         } else {
             num_shaved += 1;
@@ -148,8 +69,9 @@ fn main() {
     let recorder = PrintRecorder::default();
     metrics::set_boxed_recorder(Box::new(recorder)).unwrap();
 
-    let metrics_sub = MetricsSubscriber::default();
-    tracing::subscriber::with_default(metrics_sub, || {
+    let subscriber = Metrics::default().with_subscriber(Registry::default());
+
+    tracing::subscriber::with_default(subscriber, || {
         let number_of_yaks = 3;
         debug!("preparing to shave {} yaks", number_of_yaks);
 
